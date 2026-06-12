@@ -201,9 +201,16 @@
       // Save current scroll position to restore later
       originalScrollTop = scroller.scrollTop;
 
-      // Identify total pages in scroller. 
-      // MuseScore renders one wrapper div for each page in the document scroller.
-      const pageElements = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+      // Identify the page class name using the very first child (Page 1) of the scroller.
+      // This allows us to ignore comments, ads, and related score wrappers (which have different classes).
+      const firstChild = scroller.firstElementChild;
+      const pageClass = firstChild ? firstChild.className : "";
+
+      const pageElements = [...scroller.children].filter(el => {
+        return el.tagName === "DIV" && 
+               el.id !== "musescore-temp-spacer" && 
+               (!pageClass || el.className === pageClass);
+      });
       const totalPages = pageElements.length;
 
       if (totalPages === 0) {
@@ -219,10 +226,14 @@
       let noScrollChangeCount = 0;
 
       // Function to dynamically detect the current score's image base path.
-      // Every score has a unique hash/path in its assets (e.g. /scoredata/g/HASH/score_0.svg).
       // We ONLY check images inside the actual page wrappers to avoid recommended items or avatar icons.
       function detectCurrentScoreBasePath() {
-        const currentPages = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+        const currentPages = [...scroller.children].filter(el => {
+          return el.tagName === "DIV" && 
+                 el.id !== "musescore-temp-spacer" && 
+                 (!pageClass || el.className === pageClass);
+        });
+
         for (const page of currentPages) {
           const img = page.querySelector("img");
           if (img && img.src && img.src.startsWith("http")) {
@@ -253,8 +264,12 @@
           }
         }
 
-        // Get currently rendered page containers (exclude spacers/ads)
-        const currentPages = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+        // Get currently rendered page containers (exclude spacers, ads, recommendations)
+        const currentPages = [...scroller.children].filter(el => {
+          return el.tagName === "DIV" && 
+                 el.id !== "musescore-temp-spacer" && 
+                 (!pageClass || el.className === pageClass);
+        });
 
         // Scan images ONLY inside these page containers
         currentPages.forEach(page => {

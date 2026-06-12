@@ -4,28 +4,26 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MuseScore Clean PDF Exporter</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --primary-color: #4364f7;
-      --secondary-color: #6fb1fc;
-      --gradient-bg: linear-gradient(135deg, #0052d4 0%, #4364f7 50%, #6fb1fc 100%);
-      --dark-bg: #0e0e11;
-      --card-bg: rgba(255, 255, 255, 0.03);
-      --border-color: rgba(255, 255, 255, 0.08);
-      --text-main: #ffffff;
-      --text-muted: #a0a0ab;
+      --bg-dark: #09090b;
+      --bg-card: #18181b;
+      --border-color: #27272a;
+      --border-hover: #3f3f46;
+      --text-main: #f4f4f5;
+      --text-muted: #8b8b93;
+      --accent-color: #ffffff;
+      --btn-text: #09090b;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     }
 
     body {
       margin: 0;
-      padding: 24px;
-      width: 300px;
-      background-color: var(--dark-bg);
+      padding: 20px;
+      width: 280px;
+      background-color: var(--bg-dark);
       color: var(--text-main);
-      font-family: 'Outfit', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       box-sizing: border-box;
       overflow: hidden;
     }
@@ -38,67 +36,62 @@
     }
 
     .logo {
-      width: 72px;
-      height: 72px;
-      border-radius: 18px;
-      box-shadow: 0 8px 24px rgba(67, 100, 247, 0.3);
-      margin-bottom: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      transition: transform 0.3s ease;
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+      border: 1px solid var(--border-color);
+      transition: transform 0.2s ease;
     }
 
     .logo:hover {
-      transform: scale(1.05) rotate(2deg);
+      transform: scale(1.03);
     }
 
     h2 {
-      margin: 0 0 6px 0;
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      background: linear-gradient(120deg, #ffffff, #dcdcdc);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
     }
 
     .version {
-      font-size: 11px;
+      font-size: 10px;
       color: var(--text-muted);
-      margin-bottom: 20px;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
+      margin-bottom: 16px;
+      letter-spacing: 0.5px;
     }
 
     .instructions-card {
-      background: var(--card-bg);
+      background: var(--bg-card);
       border: 1px solid var(--border-color);
-      border-radius: 16px;
-      padding: 16px;
+      border-radius: 12px;
+      padding: 12px 14px;
       width: 100%;
       text-align: left;
       box-sizing: border-box;
-      margin-bottom: 20px;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      margin-bottom: 16px;
+      box-shadow: var(--shadow-sm);
     }
 
     .instructions-card h4 {
-      margin: 0 0 10px 0;
-      font-size: 13px;
+      margin: 0 0 8px 0;
+      font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: var(--secondary-color);
+      color: var(--text-main);
     }
 
     ol {
       margin: 0;
-      padding-left: 18px;
+      padding-left: 16px;
       color: var(--text-muted);
-      font-size: 12px;
-      line-height: 1.6;
+      font-size: 11px;
+      line-height: 1.5;
     }
 
     li {
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
 
     li strong {
@@ -107,36 +100,35 @@
 
     .btn-action {
       width: 100%;
-      background: var(--gradient-bg);
-      color: var(--text-main);
-      border: none;
-      border-radius: 12px;
-      padding: 12px;
-      font-family: 'Outfit', sans-serif;
-      font-size: 14px;
-      font-weight: 600;
+      background: var(--accent-color);
+      color: var(--btn-text);
+      border: 1px solid var(--accent-color);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 8px;
-      box-shadow: 0 4px 15px rgba(67, 100, 247, 0.3);
-      transition: all 0.2s ease;
+      gap: 6px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.15s ease;
       box-sizing: border-box;
     }
 
     .btn-action:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(67, 100, 247, 0.45);
+      background: #e4e4e7;
+      border-color: #e4e4e7;
     }
 
     .btn-action:active {
-      transform: translateY(0);
+      background: var(--accent-color);
     }
 
     .btn-action svg {
-      width: 16px;
-      height: 16px;
+      width: 14px;
+      height: 14px;
       fill: currentColor;
     }
   </style>
@@ -152,10 +144,10 @@
       <h4>How to use:</h4>
       <ol>
         <li>Open a sheet music page on <strong>musescore.com</strong>.</li>
-        <li>Look for the floating <strong>"Clean PDF Export"</strong> button in the bottom right corner of the page.</li>
-        <li>Click it and wait for all the preview pages to load.</li>
-        <li>In the system print popup, set destination to <strong>"Save as PDF"</strong>.</li>
-        <li><em>Important:</em> Uncheck <strong>"Headers and footers"</strong> for a perfectly clean PDF!</li>
+        <li>Click the floating <strong>"Clean PDF Export"</strong> button at the bottom right of the page.</li>
+        <li>Wait for all preview pages to load.</li>
+        <li>In the system print popup, select <strong>"Save as PDF"</strong>.</li>
+        <li>Uncheck <strong>"Headers and footers"</strong> for a clean layout.</li>
       </ol>
     </div>
 

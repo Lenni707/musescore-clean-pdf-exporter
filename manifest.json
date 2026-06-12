@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "MuseScore Clean PDF Exporter",
+  "version": "1.0.0",
+  "description": "Convert sheet music previews on musescore.com into clean, high-quality PDFs.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://musescore.com/*",
+        "*://*.musescore.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

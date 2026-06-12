@@ -201,10 +201,14 @@
     display: block !important;
     width: 100% !important;
     max-width: 100% !important;
-    height: 295mm !important; 
+    height: auto !important;
+    max-height: 100vh !important;
+    object-fit: contain !important;
     box-sizing: border-box !important;
     page-break-after: always !important;
     page-break-inside: avoid !important;
+    break-after: page !important;
+    break-inside: avoid !important;
     margin: 0 !important;
     padding: 0 !important;
   }

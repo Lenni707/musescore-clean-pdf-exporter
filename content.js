@@ -1,28 +1,78 @@
 // content.js
 
 (function () {
-  console.log("MuseScore Clean PDF Exporter initialized.");
+  console.log("MuseScore Clean PDF Exporter (Screenshot Mode) initialized.");
 
   // Check if we already injected the button to avoid duplicates
   if (document.querySelector(".musescore-pdf-fab")) return;
 
   // Search for the MuseScore scroller component
   function findScroller() {
-    return document.querySelector("#jmuse-scroller-component") || 
-           document.querySelector('div[class*="jmuse-scroller"]') ||
-           document.querySelector('div[id*="scroller-component"]');
+    // 1. Direct standard selectors
+    const standard = document.querySelector("#jmuse-scroller-component") || 
+                     document.querySelector('div[class*="jmuse-scroller"]') ||
+                     document.querySelector('div[id*="scroller-component"]');
+    if (standard) return standard;
+
+    // 2. Dynamic trace: Find any img that looks like a sheet page and walk up the DOM
+    const images = document.querySelectorAll("img");
+    for (const img of images) {
+      const src = img.src || "";
+      if (src.startsWith("http") && (src.includes("score_") || src.includes("score-") || src.includes("scoredata"))) {
+        let el = img.parentElement;
+        while (el && el !== document.body) {
+          if (el.id === "jmuse-scroller-component" || 
+              el.id.includes("scroller") || 
+              el.className.includes("scroller") || 
+              el.className.includes("score-viewer")) {
+            return el;
+          }
+          el = el.parentElement;
+        }
+        
+        // Fallback parent: Find the immediate parent container of the page elements
+        let parent = img.parentElement;
+        while (parent && parent !== document.body) {
+          if (parent.children.length > 1) {
+            const siblings = [...parent.children];
+            const hasManyPages = siblings.filter(child => child.tagName === "DIV" && child.querySelector("img")).length >= 1;
+            if (hasManyPages) {
+              return parent;
+            }
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+    return null;
   }
 
-  // Poll for the scroller to become available (dynamic loading)
-  const scrollerCheckInterval = setInterval(() => {
+  // Persistent poll to handle SPA navigation and re-renders
+  setInterval(() => {
     const scroller = findScroller();
-    if (scroller) {
-      clearInterval(scrollerCheckInterval);
+    const existingFab = document.querySelector(".musescore-pdf-fab");
+
+    if (scroller && !existingFab) {
       injectExporter();
+    } else if (!scroller && existingFab) {
+      removeExporter();
     }
   }, 1000);
 
+  function removeExporter() {
+    const fab = document.querySelector(".musescore-pdf-fab");
+    if (fab) fab.remove();
+
+    const overlay = document.querySelector(".musescore-pdf-overlay");
+    if (overlay) overlay.remove();
+
+    const printContainer = document.getElementById("musescore-print-container");
+    if (printContainer) printContainer.remove();
+  }
+
   function injectExporter() {
+    removeExporter();
+
     // 1. Create Floating Action Button (FAB)
     const fab = document.createElement("button");
     fab.className = "musescore-pdf-fab";
@@ -62,10 +112,9 @@
     const cancelBtn = overlay.querySelector("#musescore-pdf-cancel");
 
     let isExporting = false;
-    let checkIntervalId = null;
+    let shouldAbort = false;
     let originalScrollTop = 0;
 
-    // Reset UI and page styles back to original state
     function cleanupAndRestore() {
       isExporting = false;
       fab.disabled = false;
@@ -76,14 +125,77 @@
         Clean PDF Export
       `;
       overlay.classList.remove("active");
+      overlay.style.display = "flex"; // Restore display style
 
-      if (checkIntervalId) {
-        clearInterval(checkIntervalId);
-        checkIntervalId = null;
-      }
+      // Remove temporary fullscreen stylesheet
+      const tempStyle = document.getElementById("musescore-temp-print-styles");
+      if (tempStyle) tempStyle.remove();
     }
 
-    // Helper to compile collected images into print container and trigger window.print()
+    cancelBtn.addEventListener("click", () => {
+      shouldAbort = true;
+      cleanupAndRestore();
+    });
+
+    // Capture tab via background script and crop the page element
+    function captureAndCropPage(pageElement) {
+      return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: "captureTab" }, (response) => {
+          if (!response || response.status === "error") {
+            reject(new Error(response ? response.message : "Capture failed"));
+            return;
+          }
+
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const rect = pageElement.getBoundingClientRect();
+              const scale = window.devicePixelRatio || 1;
+
+              const canvas = document.createElement("canvas");
+              canvas.width = rect.width * scale;
+              canvas.height = rect.height * scale;
+              const ctx = canvas.getContext("2d");
+
+              // Draw screenshot cropped to page elements bounding box
+              ctx.drawImage(
+                img,
+                rect.left * scale,
+                rect.top * scale,
+                rect.width * scale,
+                rect.height * scale,
+                0,
+                0,
+                rect.width * scale,
+                rect.height * scale
+              );
+
+              resolve(canvas.toDataURL("image/png"));
+            } catch (err) {
+              reject(err);
+            }
+          };
+          img.onerror = () => reject(new Error("Failed to load screenshot"));
+          img.src = response.dataUrl;
+        });
+      });
+    }
+
+    // Wait for the page image to load/render inside the DOM page wrapper
+    function waitForPageImage(pageElement) {
+      return new Promise((resolve) => {
+        const interval = setInterval(() => {
+          const img = pageElement.querySelector("img");
+          const svg = pageElement.querySelector("svg");
+          if ((img && img.src && img.complete) || svg) {
+            clearInterval(interval);
+            setTimeout(resolve, 250); // Settlement timeout
+          }
+        }, 100);
+      });
+    }
+
+    // Compile cropped screenshot dataURLs into print container and trigger print
     function compileAndPrint(pageUrls, totalPages) {
       let printContainer = document.getElementById("musescore-print-container");
       if (printContainer) {
@@ -94,7 +206,6 @@
         document.body.appendChild(printContainer);
       }
 
-      // Append pages in order
       let pagesAppended = 0;
       for (let i = 0; i < totalPages; i++) {
         const src = pageUrls.get(i);
@@ -103,23 +214,18 @@
           img.src = src;
           printContainer.appendChild(img);
           pagesAppended++;
-        } else {
-          console.warn(`Page ${i + 1} was not loaded/found, skipping in PDF.`);
         }
       }
 
       if (pagesAppended === 0) {
-        alert("Failed to extract any sheet music images. Please reload the page and try again.");
-        if (printContainer && printContainer.parentNode) {
-          printContainer.parentNode.removeChild(printContainer);
-        }
+        alert("Failed to capture any pages. Please check permissions and try again.");
+        if (printContainer.parentNode) printContainer.parentNode.removeChild(printContainer);
         return;
       }
 
-      console.log(`Triggering PDF print interface for ${pagesAppended} pages...`);
+      console.log(`Printing PDF with ${pagesAppended} pages...`);
       window.print();
 
-      // Cleanup print container after dialog closes
       window.addEventListener("afterprint", () => {
         if (printContainer && printContainer.parentNode) {
           printContainer.parentNode.removeChild(printContainer);
@@ -127,120 +233,135 @@
       }, { once: true });
     }
 
-    cancelBtn.addEventListener("click", cleanupAndRestore);
-
     fab.addEventListener("click", async () => {
       if (isExporting) return;
       isExporting = true;
+      shouldAbort = false;
       fab.disabled = true;
-      fab.innerText = "Extracting...";
+      fab.innerText = "Capturing...";
 
       const scroller = findScroller();
       if (!scroller) {
-        alert("Could not find sheet music scroller container. Please wait for the page to fully load or refresh.");
+        alert("Scroller not found. Please refresh page.");
         cleanupAndRestore();
         return;
       }
 
-      // Show loader overlay
       overlay.classList.add("active");
-      statusText.innerText = "Initializing pages...";
+      statusText.innerText = "Initializing screenshot capture...";
       percentText.innerText = "0%";
       progressFill.style.width = "0%";
 
-      // Save current scroll position to restore later
       originalScrollTop = scroller.scrollTop;
 
-      // Identify total pages in scroller. 
-      // MuseScore renders one wrapper div for each page in the document scroller.
-      const pageElements = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+      // Identify page elements dynamically
+      const firstPage = [...scroller.children].find(el => el.tagName === "DIV" && el.classList.length > 0);
+      const pageClass = firstPage ? firstPage.classList[0] : "";
+
+      const pageElements = [...scroller.children].filter(el => {
+        return el.tagName === "DIV" && 
+               el.id !== "musescore-temp-spacer" && 
+               (!pageClass || el.classList.contains(pageClass));
+      });
       const totalPages = pageElements.length;
 
       if (totalPages === 0) {
-        alert("No page elements detected in the scroller.");
+        alert("No sheet page elements detected.");
         cleanupAndRestore();
         return;
       }
 
-      console.log(`Found ${totalPages} pages in document scroller.`);
+      // 1. Inject fullscreen layout stylesheet to isolate sheets for clean screenshots
+      const tempStyle = document.createElement("style");
+      tempStyle.id = "musescore-temp-print-styles";
+      tempStyle.textContent = `
+        ::-webkit-scrollbar {
+          display: none !important;
+        }
+        #jmuse-scroller-component,
+        div[class*="jmuse-scroller"],
+        div[id*="scroller-component"] {
+          position: fixed !important;
+          top: 0 !important;
+          left: 0 !important;
+          width: 100vw !important;
+          height: 100vh !important;
+          z-index: 9999999 !important;
+          background: #ffffff !important;
+          overflow: auto !important;
+        }
+        body > :not(#jmuse-scroller-component):not(div[class*="jmuse-scroller"]):not(div[id*="scroller-component"]):not(.musescore-pdf-overlay) {
+          display: none !important;
+        }
+        /* Unblur and reveal paywall placeholders */
+        *, [class*="blur"], [class*="locked"], [class*="paywall"] {
+          filter: none !important;
+          backdrop-filter: none !important;
+        }
+        [class*="paywall"],
+        [class*="upgrade"],
+        [class*="promo"],
+        [class*="banner"],
+        [class*="obfuscation"],
+        div[class*="shield"],
+        .react-shield-overlay {
+          display: none !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
+        }
+      `;
+      document.head.appendChild(tempStyle);
 
-      const pageUrls = new Map(); // pageIndex -> URL string
-      let lastScrollTop = -1;
-      let noScrollChangeCount = 0;
-      
-      // Scroll back to the top to start sequential scan
+      const pageUrls = new Map();
       scroller.scrollTop = 0;
 
-      // Monitor and scroll down step-by-step
-      checkIntervalId = setInterval(() => {
-        // Scan currently rendered images inside scroller
-        const images = scroller.querySelectorAll("img");
-        images.forEach(img => {
-          if (img.src && img.src.startsWith("http")) {
-            // Extrapolate page index from image URL file name (e.g. score_0.svg or 0.png)
-            const match = img.src.match(/score_(\d+)\.(svg|png|jpg|jpeg)/i) || 
-                          img.src.match(/score-(\d+)/i) || 
-                          img.src.match(/\/(\d+)\.(svg|png|jpg|jpeg)/i);
-            if (match) {
-              const pageIndex = parseInt(match[1], 10);
-              if (pageIndex >= 0 && pageIndex < totalPages) {
-                pageUrls.set(pageIndex, img.src);
-              }
-            }
-          }
-        });
+      // 2. Loop page by page, center, wait for image, hide loader overlay, capture, restore loader
+      try {
+        for (let i = 0; i < totalPages; i++) {
+          if (shouldAbort) return;
 
-        // Scan inline SVGs (fallback)
-        const svgs = scroller.querySelectorAll("svg");
-        svgs.forEach((svg) => {
-          // If MuseScore ever renders inline SVGs, they would be handled here.
-          // Currently, they use standard img tags.
-        });
+          const pageElement = pageElements[i];
+          statusText.innerText = `Aligning page ${i + 1} of ${totalPages}...`;
+          
+          // Center element in viewport
+          pageElement.scrollIntoView({ block: "center", inline: "center" });
 
-        // Update progress UI
-        const loadedCount = pageUrls.size;
-        const percentage = Math.round((loadedCount / totalPages) * 100);
-        percentText.innerText = `${percentage}%`;
-        progressFill.style.width = `${percentage}%`;
-        statusText.innerText = `Loading sheet pages: ${loadedCount} of ${totalPages}...`;
+          // Wait for load/render
+          await waitForPageImage(pageElement);
 
-        // If we successfully found all pages, compile and print!
-        if (loadedCount === totalPages) {
-          clearInterval(checkIntervalId);
-          checkIntervalId = null;
-          statusText.innerText = "Compiling PDF document...";
+          if (shouldAbort) return;
 
-          setTimeout(() => {
-            scroller.scrollTop = originalScrollTop; // Restore user's original scroll view
-            compileAndPrint(pageUrls, totalPages);
-            cleanupAndRestore();
-          }, 800);
-          return;
+          // Temporarily hide progress overlay during screenshot
+          overlay.style.display = "none";
+          await new Promise(r => setTimeout(r, 80)); // Let display change settle
+
+          // Capture and Crop
+          const croppedSrc = await captureAndCropPage(pageElement);
+          pageUrls.set(i, croppedSrc);
+
+          // Restore progress overlay
+          overlay.style.display = "flex";
+
+          const percentage = Math.round(((i + 1) / totalPages) * 100);
+          percentText.innerText = `${percentage}%`;
+          progressFill.style.width = `${percentage}%`;
+          statusText.innerText = `Captured page ${i + 1} of ${totalPages}...`;
         }
 
-        // Scroll down by ~75% of container height to bring new pages into view naturally
-        scroller.scrollTop += Math.round(scroller.clientHeight * 0.75);
+        if (shouldAbort) return;
 
-        // Check if we hit the bottom of the container
-        if (scroller.scrollTop === lastScrollTop) {
-          noScrollChangeCount++;
-          // Wait up to 5 ticks (1.5s) at the bottom in case pages are loading slowly
-          if (noScrollChangeCount >= 5) {
-            clearInterval(checkIntervalId);
-            checkIntervalId = null;
+        statusText.innerText = "Assembling PDF document...";
+        setTimeout(() => {
+          cleanupAndRestore();
+          scroller.scrollTop = originalScrollTop; // Restore view
+          compileAndPrint(pageUrls, totalPages);
+        }, 500);
 
-            statusText.innerText = "Compiling PDF document (partial)...";
-            setTimeout(() => {
-              scroller.scrollTop = originalScrollTop; // Restore scroll view
-              compileAndPrint(pageUrls, totalPages);
-              cleanupAndRestore();
-            }, 800);
-          }
-        } else {
-          lastScrollTop = scroller.scrollTop;
-          noScrollChangeCount = 0;
-        }
-      }, 300); // 300ms intervals provide a smooth scroll pace
+      } catch (err) {
+        console.error("Capture loop error:", err);
+        alert(`Export failed during screen capture: ${err.message}`);
+        cleanupAndRestore();
+      }
     });
   }
 
@@ -256,9 +377,9 @@
           sendResponse({ status: "running" });
         }
       } else {
-        sendResponse({ status: "error", message: "Sheet music scroller component not found. Make sure you are on a score preview page." });
+        sendResponse({ status: "error", message: "Exporter not active on this page." });
       }
     }
-    return true; // Keep channel open for asynchronous responses
+    return true;
   });
 })();

@@ -3,26 +3,76 @@
 (function () {
   console.log("MuseScore Clean PDF Exporter initialized.");
 
-  // Check if we already injected the button to avoid duplicates
-  if (document.querySelector(".musescore-pdf-fab")) return;
-
   // Search for the MuseScore scroller component
   function findScroller() {
-    return document.querySelector("#jmuse-scroller-component") || 
-           document.querySelector('div[class*="jmuse-scroller"]') ||
-           document.querySelector('div[id*="scroller-component"]');
+    // 1. Direct standard selectors
+    const standard = document.querySelector("#jmuse-scroller-component") || 
+                     document.querySelector('div[class*="jmuse-scroller"]') ||
+                     document.querySelector('div[id*="scroller-component"]');
+    if (standard) return standard;
+
+    // 2. Dynamic trace: Find any img that looks like a sheet page and walk up the DOM
+    const images = document.querySelectorAll("img");
+    for (const img of images) {
+      const src = img.src || "";
+      if (src.startsWith("http") && (src.includes("score_") || src.includes("score-") || src.includes("scoredata"))) {
+        let el = img.parentElement;
+        while (el && el !== document.body) {
+          if (el.id === "jmuse-scroller-component" || 
+              el.id.includes("scroller") || 
+              el.className.includes("scroller") || 
+              el.className.includes("score-viewer")) {
+            return el;
+          }
+          el = el.parentElement;
+        }
+        
+        // Fallback parent: Find the immediate parent container of the page elements
+        let parent = img.parentElement;
+        while (parent && parent !== document.body) {
+          if (parent.children.length > 1) {
+            const siblings = [...parent.children];
+            const hasManyPages = siblings.filter(child => child.tagName === "DIV" && child.querySelector("img")).length >= 1;
+            if (hasManyPages) {
+              return parent;
+            }
+          }
+          parent = parent.parentElement;
+        }
+      }
+    }
+    return null;
   }
 
-  // Poll for the scroller to become available (dynamic loading)
-  const scrollerCheckInterval = setInterval(() => {
+  // Persistent poll to handle SPA navigation and re-renders
+  setInterval(() => {
     const scroller = findScroller();
-    if (scroller) {
-      clearInterval(scrollerCheckInterval);
+    const existingFab = document.querySelector(".musescore-pdf-fab");
+
+    if (scroller && !existingFab) {
+      // Scroller is present but UI is missing (e.g. page load or SPA transition)
       injectExporter();
+    } else if (!scroller && existingFab) {
+      // Scroller is gone (user navigated away), clean up UI elements
+      removeExporter();
     }
   }, 1000);
 
+  function removeExporter() {
+    const fab = document.querySelector(".musescore-pdf-fab");
+    if (fab) fab.remove();
+
+    const overlay = document.querySelector(".musescore-pdf-overlay");
+    if (overlay) overlay.remove();
+
+    const printContainer = document.getElementById("musescore-print-container");
+    if (printContainer) printContainer.remove();
+  }
+
   function injectExporter() {
+    // Ensure no duplicates
+    removeExporter();
+
     // 1. Create Floating Action Button (FAB)
     const fab = document.createElement("button");
     fab.className = "musescore-pdf-fab";

@@ -113,6 +113,7 @@
 
     let isExporting = false;
     let shouldAbort = false;
+    let checkIntervalId = null;
     let originalScrollTop = 0;
 
     function cleanupAndRestore() {
@@ -184,12 +185,14 @@
     // Wait for the page image to load/render inside the DOM page wrapper
     function waitForPageImage(pageElement) {
       return new Promise((resolve) => {
+        let attempts = 0;
         const interval = setInterval(() => {
           const img = pageElement.querySelector("img");
           const svg = pageElement.querySelector("svg");
-          if ((img && img.src && img.complete) || svg) {
+          attempts++;
+          if ((img && img.src && img.complete) || svg || attempts > 20) {
             clearInterval(interval);
-            setTimeout(resolve, 250); // Settlement timeout
+            setTimeout(resolve, 100); // Settlement timeout
           }
         }, 100);
       });
@@ -238,7 +241,7 @@
       isExporting = true;
       shouldAbort = false;
       fab.disabled = true;
-      fab.innerText = "Capturing...";
+      fab.innerText = "Preparing...";
 
       const scroller = findScroller();
       if (!scroller) {
@@ -248,7 +251,7 @@
       }
 
       overlay.classList.add("active");
-      statusText.innerText = "Initializing screenshot capture...";
+      statusText.innerText = "Initializing pages...";
       percentText.innerText = "0%";
       progressFill.style.width = "0%";
 
@@ -271,96 +274,166 @@
         return;
       }
 
-      // 1. Inject fullscreen layout stylesheet to isolate sheets for clean screenshots
-      const tempStyle = document.createElement("style");
-      tempStyle.id = "musescore-temp-print-styles";
-      tempStyle.textContent = `
-        ::-webkit-scrollbar {
-          display: none !important;
-        }
-        #jmuse-scroller-component,
-        div[class*="jmuse-scroller"],
-        div[id*="scroller-component"] {
-          position: fixed !important;
-          top: 0 !important;
-          left: 0 !important;
-          width: 100vw !important;
-          height: 100vh !important;
-          z-index: 9999999 !important;
-          background: #ffffff !important;
-          overflow: auto !important;
-        }
-        body > :not(#jmuse-scroller-component):not(div[class*="jmuse-scroller"]):not(div[id*="scroller-component"]):not(.musescore-pdf-overlay) {
-          display: none !important;
-        }
-        /* Unblur and reveal paywall placeholders */
-        *, [class*="blur"], [class*="locked"], [class*="paywall"] {
-          filter: none !important;
-          backdrop-filter: none !important;
-        }
-        [class*="paywall"],
-        [class*="upgrade"],
-        [class*="promo"],
-        [class*="banner"],
-        [class*="obfuscation"],
-        div[class*="shield"],
-        .react-shield-overlay {
-          display: none !important;
-          opacity: 0 !important;
-          pointer-events: none !important;
-        }
-      `;
-      document.head.appendChild(tempStyle);
-
-      const pageUrls = new Map();
+      // -------------------------------------------------------------
+      // Pass 1: Natural Scroll to load all images into memory/DOM
+      // -------------------------------------------------------------
+      let lastScrollTop = -1;
+      let noScrollChangeCount = 0;
       scroller.scrollTop = 0;
 
-      // 2. Loop page by page, center, wait for image, hide loader overlay, capture, restore loader
-      try {
-        for (let i = 0; i < totalPages; i++) {
-          if (shouldAbort) return;
-
-          const pageElement = pageElements[i];
-          statusText.innerText = `Aligning page ${i + 1} of ${totalPages}...`;
-          
-          // Center element in viewport
-          pageElement.scrollIntoView({ block: "center", inline: "center" });
-
-          // Wait for load/render
-          await waitForPageImage(pageElement);
-
-          if (shouldAbort) return;
-
-          // Temporarily hide progress overlay during screenshot
-          overlay.style.display = "none";
-          await new Promise(r => setTimeout(r, 80)); // Let display change settle
-
-          // Capture and Crop
-          const croppedSrc = await captureAndCropPage(pageElement);
-          pageUrls.set(i, croppedSrc);
-
-          // Restore progress overlay
-          overlay.style.display = "flex";
-
-          const percentage = Math.round(((i + 1) / totalPages) * 100);
-          percentText.innerText = `${percentage}%`;
-          progressFill.style.width = `${percentage}%`;
-          statusText.innerText = `Captured page ${i + 1} of ${totalPages}...`;
-        }
-
+      checkIntervalId = setInterval(async () => {
         if (shouldAbort) return;
 
-        statusText.innerText = "Assembling PDF document...";
-        setTimeout(() => {
-          cleanupAndRestore();
-          scroller.scrollTop = originalScrollTop; // Restore view
-          compileAndPrint(pageUrls, totalPages);
-        }, 500);
+        // Count loaded pages currently in DOM
+        const currentPages = [...scroller.children].filter(el => {
+          return el.tagName === "DIV" && 
+                 el.id !== "musescore-temp-spacer" && 
+                 (!pageClass || el.classList.contains(pageClass));
+        });
 
-      } catch (err) {
-        console.error("Capture loop error:", err);
-        alert(`Export failed during screen capture: ${err.message}`);
-        cleanupAndRestore();
+        let loadedCount = 0;
+        currentPages.forEach(page => {
+          const img = page.querySelector("img");
+          const svg = page.querySelector("svg");
+          if ((img && img.src && img.complete) || svg) {
+            loadedCount++;
+          }
+        });
+
+        const percentage = Math.round((loadedCount / totalPages) * 100);
+        percentText.innerText = `${percentage}%`;
+        progressFill.style.width = `${percentage}%`;
+        statusText.innerText = `Caching sheet pages: ${loadedCount} of ${totalPages}...`;
+
+        if (loadedCount === totalPages) {
+          clearInterval(checkIntervalId);
+          checkIntervalId = null;
+          startCapturePass();
+          return;
+        }
+
+        // Scroll down in natural layout to trigger lazy load observers
+        scroller.scrollTop += Math.round(scroller.clientHeight * 0.75);
+
+        if (scroller.scrollTop === lastScrollTop) {
+          noScrollChangeCount++;
+          if (noScrollChangeCount >= 6) {
+            clearInterval(checkIntervalId);
+            checkIntervalId = null;
+            // Scroll limit reached; start capture pass on whatever pages loaded
+            startCapturePass();
+          }
+        } else {
+          lastScrollTop = scroller.scrollTop;
+          noScrollChangeCount = 0;
+        }
+      }, 300);
+
+      // -------------------------------------------------------------
+      // Pass 2: Print Layout Injection and Visual Capture Sweep
+      // -------------------------------------------------------------
+      async function startCapturePass() {
+        if (shouldAbort) return;
+        
+        statusText.innerText = "Applying clean print layout...";
+        percentText.innerText = "0%";
+        progressFill.style.width = "0%";
+
+        // Inject fullscreen styles to isolate sheet music pages
+        const tempStyle = document.createElement("style");
+        tempStyle.id = "musescore-temp-print-styles";
+        tempStyle.textContent = `
+          ::-webkit-scrollbar {
+            display: none !important;
+          }
+          #jmuse-scroller-component,
+          div[class*="jmuse-scroller"],
+          div[id*="scroller-component"] {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999999 !important;
+            background: #ffffff !important;
+            overflow: auto !important;
+          }
+          body > :not(#jmuse-scroller-component):not(div[class*="jmuse-scroller"]):not(div[id*="scroller-component"]):not(.musescore-pdf-overlay) {
+            display: none !important;
+          }
+          *, [class*="blur"], [class*="locked"], [class*="paywall"] {
+            filter: none !important;
+            backdrop-filter: none !important;
+          }
+          [class*="paywall"],
+          [class*="upgrade"],
+          [class*="promo"],
+          [class*="banner"],
+          [class*="obfuscation"],
+          div[class*="shield"],
+          .react-shield-overlay {
+            display: none !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+          }
+        `;
+        document.head.appendChild(tempStyle);
+
+        const pageUrls = new Map();
+        scroller.scrollTop = 0;
+
+        try {
+          // Identify elements under the new fullscreen scroller
+          const capturePages = [...scroller.children].filter(el => {
+            return el.tagName === "DIV" && 
+                   el.id !== "musescore-temp-spacer" && 
+                   (!pageClass || el.classList.contains(pageClass));
+          });
+
+          for (let i = 0; i < totalPages; i++) {
+            if (shouldAbort) return;
+
+            const pageElement = capturePages[i];
+            if (!pageElement) continue;
+
+            statusText.innerText = `Capturing page ${i + 1} of ${totalPages}...`;
+            pageElement.scrollIntoView({ block: "center", inline: "center" });
+
+            // Settle layout positioning
+            await waitForPageImage(pageElement);
+
+            if (shouldAbort) return;
+
+            // Temporarily hide progress overlay during screenshot
+            overlay.style.display = "none";
+            await new Promise(r => setTimeout(r, 80));
+
+            // Capture and Crop
+            const croppedSrc = await captureAndCropPage(pageElement);
+            pageUrls.set(i, croppedSrc);
+
+            // Restore progress overlay
+            overlay.style.display = "flex";
+
+            const percentage = Math.round(((i + 1) / totalPages) * 100);
+            percentText.innerText = `${percentage}%`;
+            progressFill.style.width = `${percentage}%`;
+          }
+
+          if (shouldAbort) return;
+
+          statusText.innerText = "Assembling PDF document...";
+          setTimeout(() => {
+            cleanupAndRestore();
+            scroller.scrollTop = originalScrollTop; // Restore view
+            compileAndPrint(pageUrls, totalPages);
+          }, 500);
+
+        } catch (err) {
+          console.error("Capture loop error:", err);
+          alert(`Export failed during screen capture: ${err.message}`);
+          cleanupAndRestore();
+        }
       }
     });
   }

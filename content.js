@@ -63,9 +63,7 @@
 
     let isExporting = false;
     let checkIntervalId = null;
-    let originalStyles = [];
-    let originalScrollerHeight = "";
-    let spacerDiv = null;
+    let originalScrollTop = 0;
 
     // Reset UI and page styles back to original state
     function cleanupAndRestore() {
@@ -83,24 +81,50 @@
         clearInterval(checkIntervalId);
         checkIntervalId = null;
       }
+    }
 
-      // Restore scroller elements positions
-      const scroller = findScroller();
-      if (scroller) {
-        originalStyles.forEach(item => {
-          if (item.el) {
-            item.el.style.position = item.position;
-          }
-        });
-        scroller.style.height = originalScrollerHeight;
+    // Helper to compile collected images into print container and trigger window.print()
+    function compileAndPrint(pageUrls, totalPages) {
+      let printContainer = document.getElementById("musescore-print-container");
+      if (printContainer) {
+        printContainer.innerHTML = "";
+      } else {
+        printContainer = document.createElement("div");
+        printContainer.id = "musescore-print-container";
+        document.body.appendChild(printContainer);
       }
-      originalStyles = [];
 
-      // Remove spacer
-      if (spacerDiv && spacerDiv.parentNode) {
-        spacerDiv.parentNode.removeChild(spacerDiv);
+      // Append pages in order
+      let pagesAppended = 0;
+      for (let i = 0; i < totalPages; i++) {
+        const src = pageUrls.get(i);
+        if (src) {
+          const img = document.createElement("img");
+          img.src = src;
+          printContainer.appendChild(img);
+          pagesAppended++;
+        } else {
+          console.warn(`Page ${i + 1} was not loaded/found, skipping in PDF.`);
+        }
       }
-      spacerDiv = null;
+
+      if (pagesAppended === 0) {
+        alert("Failed to extract any sheet music images. Please reload the page and try again.");
+        if (printContainer && printContainer.parentNode) {
+          printContainer.parentNode.removeChild(printContainer);
+        }
+        return;
+      }
+
+      console.log(`Triggering PDF print interface for ${pagesAppended} pages...`);
+      window.print();
+
+      // Cleanup print container after dialog closes
+      window.addEventListener("afterprint", () => {
+        if (printContainer && printContainer.parentNode) {
+          printContainer.parentNode.removeChild(printContainer);
+        }
+      }, { once: true });
     }
 
     cancelBtn.addEventListener("click", cleanupAndRestore);
@@ -124,117 +148,99 @@
       percentText.innerText = "0%";
       progressFill.style.width = "0%";
 
-      // Identify all page containers (exclude any scripts/styles or our spacer if already present)
-      const allChildren = [...scroller.children];
-      const pages = allChildren.filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+      // Save current scroll position to restore later
+      originalScrollTop = scroller.scrollTop;
 
-      if (pages.length === 0) {
-        alert("No page elements found in the scroller.");
+      // Identify total pages in scroller. 
+      // MuseScore renders one wrapper div for each page in the document scroller.
+      const pageElements = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+      const totalPages = pageElements.length;
+
+      if (totalPages === 0) {
+        alert("No page elements detected in the scroller.");
         cleanupAndRestore();
         return;
       }
 
-      console.log(`Found ${pages.length} sheet music pages wrapper.`);
+      console.log(`Found ${totalPages} pages in document scroller.`);
 
-      // 1. Save original styles and stack all pages absolutely at the top
-      originalStyles = [];
-      originalScrollerHeight = scroller.style.height || "";
+      const pageUrls = new Map(); // pageIndex -> URL string
+      let lastScrollTop = -1;
+      let noScrollChangeCount = 0;
+      
+      // Scroll back to the top to start sequential scan
+      scroller.scrollTop = 0;
 
-      pages.forEach(page => {
-        originalStyles.push({
-          el: page,
-          position: page.style.position || ""
-        });
-        page.style.position = "absolute";
-      });
-
-      // 2. Add temporary scroll spacer and size down viewport to trigger lazy load for stacked divs
-      spacerDiv = document.createElement("div");
-      spacerDiv.id = "musescore-temp-spacer";
-      spacerDiv.style.height = "2000px";
-      scroller.appendChild(spacerDiv);
-
-      scroller.style.height = "9px";
-      scroller.scrollTo(0, 0);
-      scroller.scrollTo(0, 1); // Triggers lazy-load scrolling listeners
-
-      statusText.innerText = `Connecting lazy-loader (0/${pages.length} pages)...`;
-
-      // 3. Start monitoring progress
-      let lastLoadedCount = -1;
+      // Monitor and scroll down step-by-step
       checkIntervalId = setInterval(() => {
-        let loadedCount = 0;
-        const pageAssets = [];
-
-        pages.forEach((page, index) => {
-          const img = page.querySelector("img");
-          const svg = page.querySelector("svg");
-
-          if (img && img.src && img.src.startsWith("http") && img.complete) {
-            loadedCount++;
-            pageAssets.push({ type: "img", el: img });
-          } else if (svg) {
-            loadedCount++;
-            pageAssets.push({ type: "svg", el: svg });
+        // Scan currently rendered images inside scroller
+        const images = scroller.querySelectorAll("img");
+        images.forEach(img => {
+          if (img.src && img.src.startsWith("http")) {
+            // Extrapolate page index from image URL file name (e.g. score_0.svg or 0.png)
+            const match = img.src.match(/score_(\d+)\.(svg|png|jpg|jpeg)/i) || 
+                          img.src.match(/score-(\d+)/i) || 
+                          img.src.match(/\/(\d+)\.(svg|png|jpg|jpeg)/i);
+            if (match) {
+              const pageIndex = parseInt(match[1], 10);
+              if (pageIndex >= 0 && pageIndex < totalPages) {
+                pageUrls.set(pageIndex, img.src);
+              }
+            }
           }
         });
 
-        // Update progress
-        const percentage = Math.round((loadedCount / pages.length) * 100);
+        // Scan inline SVGs (fallback)
+        const svgs = scroller.querySelectorAll("svg");
+        svgs.forEach((svg) => {
+          // If MuseScore ever renders inline SVGs, they would be handled here.
+          // Currently, they use standard img tags.
+        });
+
+        // Update progress UI
+        const loadedCount = pageUrls.size;
+        const percentage = Math.round((loadedCount / totalPages) * 100);
         percentText.innerText = `${percentage}%`;
         progressFill.style.width = `${percentage}%`;
+        statusText.innerText = `Loading sheet pages: ${loadedCount} of ${totalPages}...`;
 
-        if (loadedCount !== lastLoadedCount) {
-          statusText.innerText = `Loading sheet pages: ${loadedCount} of ${pages.length}...`;
-          lastLoadedCount = loadedCount;
-        }
-
-        // 4. Once all pages are loaded, compile and print!
-        if (loadedCount === pages.length) {
+        // If we successfully found all pages, compile and print!
+        if (loadedCount === totalPages) {
           clearInterval(checkIntervalId);
           checkIntervalId = null;
           statusText.innerText = "Compiling PDF document...";
 
           setTimeout(() => {
-            // Restore scroller state first
+            scroller.scrollTop = originalScrollTop; // Restore user's original scroll view
+            compileAndPrint(pageUrls, totalPages);
             cleanupAndRestore();
-
-            // Create temporary printing container
-            let printContainer = document.getElementById("musescore-print-container");
-            if (printContainer) {
-              printContainer.innerHTML = "";
-            } else {
-              printContainer = document.createElement("div");
-              printContainer.id = "musescore-print-container";
-              document.body.appendChild(printContainer);
-            }
-
-            // Append clones of all page assets
-            pageAssets.forEach(asset => {
-              if (asset.type === "img") {
-                const clone = document.createElement("img");
-                clone.src = asset.el.src;
-                printContainer.appendChild(clone);
-              } else if (asset.type === "svg") {
-                const clone = asset.el.cloneNode(true);
-                printContainer.appendChild(clone);
-              }
-            });
-
-            // Trigger browser print
-            console.log("Triggering PDF print interface...");
-            window.print();
-
-            // Cleanup print container after dialog closes
-            window.addEventListener("afterprint", () => {
-              if (printContainer && printContainer.parentNode) {
-                printContainer.parentNode.removeChild(printContainer);
-              }
-            }, { once: true });
-
           }, 800);
+          return;
         }
-      }, 500);
+
+        // Scroll down by ~75% of container height to bring new pages into view naturally
+        scroller.scrollTop += Math.round(scroller.clientHeight * 0.75);
+
+        // Check if we hit the bottom of the container
+        if (scroller.scrollTop === lastScrollTop) {
+          noScrollChangeCount++;
+          // Wait up to 5 ticks (1.5s) at the bottom in case pages are loading slowly
+          if (noScrollChangeCount >= 5) {
+            clearInterval(checkIntervalId);
+            checkIntervalId = null;
+
+            statusText.innerText = "Compiling PDF document (partial)...";
+            setTimeout(() => {
+              scroller.scrollTop = originalScrollTop; // Restore scroll view
+              compileAndPrint(pageUrls, totalPages);
+              cleanupAndRestore();
+            }, 800);
+          }
+        } else {
+          lastScrollTop = scroller.scrollTop;
+          noScrollChangeCount = 0;
+        }
+      }, 300); // 300ms intervals provide a smooth scroll pace
     });
   }
 

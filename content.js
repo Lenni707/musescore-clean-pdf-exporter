@@ -8,74 +8,21 @@
 
   // Search for the MuseScore scroller component
   function findScroller() {
-    // 1. Direct standard selectors
-    const standard = document.querySelector("#jmuse-scroller-component") || 
-                     document.querySelector('div[class*="jmuse-scroller"]') ||
-                     document.querySelector('div[id*="scroller-component"]');
-    if (standard) return standard;
-
-    // 2. Dynamic trace: Find any img that looks like a sheet page and walk up the DOM
-    const images = document.querySelectorAll("img");
-    for (const img of images) {
-      const src = img.src || "";
-      if (src.startsWith("http") && (src.includes("score_") || src.includes("score-") || src.includes("scoredata"))) {
-        let el = img.parentElement;
-        while (el && el !== document.body) {
-          if (el.id === "jmuse-scroller-component" || 
-              el.id.includes("scroller") || 
-              el.className.includes("scroller") || 
-              el.className.includes("score-viewer")) {
-            return el;
-          }
-          el = el.parentElement;
-        }
-        
-        // Fallback parent: Find the immediate parent container of the page elements
-        let parent = img.parentElement;
-        while (parent && parent !== document.body) {
-          if (parent.children.length > 1) {
-            const siblings = [...parent.children];
-            const hasManyPages = siblings.filter(child => child.tagName === "DIV" && child.querySelector("img")).length >= 1;
-            if (hasManyPages) {
-              return parent;
-            }
-          }
-          parent = parent.parentElement;
-        }
-      }
-    }
-    return null;
+    return document.querySelector("#jmuse-scroller-component") || 
+           document.querySelector('div[class*="jmuse-scroller"]') ||
+           document.querySelector('div[id*="scroller-component"]');
   }
 
-  // Persistent poll to handle SPA navigation and re-renders
-  setInterval(() => {
+  // Poll for the scroller to become available (dynamic loading)
+  const scrollerCheckInterval = setInterval(() => {
     const scroller = findScroller();
-    const existingFab = document.querySelector(".musescore-pdf-fab");
-
-    if (scroller && !existingFab) {
-      // Scroller is present but UI is missing (e.g. page load or SPA transition)
+    if (scroller) {
+      clearInterval(scrollerCheckInterval);
       injectExporter();
-    } else if (!scroller && existingFab) {
-      // Scroller is gone (user navigated away), clean up UI elements
-      removeExporter();
     }
   }, 1000);
 
-  function removeExporter() {
-    const fab = document.querySelector(".musescore-pdf-fab");
-    if (fab) fab.remove();
-
-    const overlay = document.querySelector(".musescore-pdf-overlay");
-    if (overlay) overlay.remove();
-
-    const printContainer = document.getElementById("musescore-print-container");
-    if (printContainer) printContainer.remove();
-  }
-
   function injectExporter() {
-    // Ensure no duplicates
-    removeExporter();
-
     // 1. Create Floating Action Button (FAB)
     const fab = document.createElement("button");
     fab.className = "musescore-pdf-fab";
@@ -204,16 +151,9 @@
       // Save current scroll position to restore later
       originalScrollTop = scroller.scrollTop;
 
-      // Identify the page base class name dynamically using the first DIV child.
-      // This allows us to filter out recommendations and ads by checking class lists.
-      const firstPage = [...scroller.children].find(el => el.tagName === "DIV" && el.classList.length > 0);
-      const pageClass = firstPage ? firstPage.classList[0] : "";
-
-      const pageElements = [...scroller.children].filter(el => {
-        return el.tagName === "DIV" && 
-               el.id !== "musescore-temp-spacer" && 
-               (!pageClass || el.classList.contains(pageClass));
-      });
+      // Identify total pages in scroller. 
+      // MuseScore renders one wrapper div for each page in the document scroller.
+      const pageElements = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
       const totalPages = pageElements.length;
 
       if (totalPages === 0) {
@@ -227,62 +167,16 @@
       const pageUrls = new Map(); // pageIndex -> URL string
       let lastScrollTop = -1;
       let noScrollChangeCount = 0;
-
-      // Function to dynamically detect the current score's image base path.
-      // We ONLY check images inside the actual page wrappers to avoid recommended items or avatar icons.
-      function detectCurrentScoreBasePath() {
-        const currentPages = [...scroller.children].filter(el => {
-          return el.tagName === "DIV" && 
-                 el.id !== "musescore-temp-spacer" && 
-                 (!pageClass || el.classList.contains(pageClass));
-        });
-
-        for (const page of currentPages) {
-          const img = page.querySelector("img");
-          if (img && img.src && img.src.startsWith("http")) {
-            const match = img.src.match(/(.*\/)score_\d+/i) || img.src.match(/(.*\/)\d+\.(svg|png)/i);
-            if (match) {
-              return match[1]; // Returns everything up to "score_X"
-            }
-          }
-        }
-        return null;
-      }
-
-      let currentScoreBasePath = detectCurrentScoreBasePath();
-      if (currentScoreBasePath) {
-        console.log(`Detected score base path: ${currentScoreBasePath}`);
-      }
       
       // Scroll back to the top to start sequential scan
       scroller.scrollTop = 0;
 
       // Monitor and scroll down step-by-step
       checkIntervalId = setInterval(() => {
-        // Try to detect base path if not already found (in case first images loaded slowly)
-        if (!currentScoreBasePath) {
-          currentScoreBasePath = detectCurrentScoreBasePath();
-          if (currentScoreBasePath) {
-            console.log(`Detected score base path (deferred): ${currentScoreBasePath}`);
-          }
-        }
-
-        // Get currently rendered page containers (exclude spacers, ads, recommendations)
-        const currentPages = [...scroller.children].filter(el => {
-          return el.tagName === "DIV" && 
-                 el.id !== "musescore-temp-spacer" && 
-                 (!pageClass || el.classList.contains(pageClass));
-        });
-
-        // Scan images ONLY inside these page containers
-        currentPages.forEach(page => {
-          const img = page.querySelector("img");
-          if (img && img.src && img.src.startsWith("http")) {
-            // Guard filter: ensure this image belongs to the current score
-            if (currentScoreBasePath && !img.src.includes(currentScoreBasePath)) {
-              return; // Skip images belonging to a different score (remnants of SPAs)
-            }
-
+        // Scan currently rendered images inside scroller
+        const images = scroller.querySelectorAll("img");
+        images.forEach(img => {
+          if (img.src && img.src.startsWith("http")) {
             // Extrapolate page index from image URL file name (e.g. score_0.svg or 0.png)
             const match = img.src.match(/score_(\d+)\.(svg|png|jpg|jpeg)/i) || 
                           img.src.match(/score-(\d+)/i) || 
@@ -294,6 +188,13 @@
               }
             }
           }
+        });
+
+        // Scan inline SVGs (fallback)
+        const svgs = scroller.querySelectorAll("svg");
+        svgs.forEach((svg) => {
+          // If MuseScore ever renders inline SVGs, they would be handled here.
+          // Currently, they use standard img tags.
         });
 
         // Update progress UI

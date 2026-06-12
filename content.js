@@ -167,16 +167,50 @@
       const pageUrls = new Map(); // pageIndex -> URL string
       let lastScrollTop = -1;
       let noScrollChangeCount = 0;
+
+      // Function to dynamically detect the current score's image base path.
+      // Every score has a unique hash/path in its assets (e.g. /scoredata/g/HASH/score_0.svg).
+      function detectCurrentScoreBasePath() {
+        const imgs = scroller.querySelectorAll("img");
+        for (const img of imgs) {
+          if (img.src && img.src.startsWith("http")) {
+            const match = img.src.match(/(.*\/)score_\d+/i) || img.src.match(/(.*\/)\d+\.(svg|png)/i);
+            if (match) {
+              return match[1]; // Returns everything up to "score_X"
+            }
+          }
+        }
+        return null;
+      }
+
+      let currentScoreBasePath = detectCurrentScoreBasePath();
+      if (currentScoreBasePath) {
+        console.log(`Detected score base path: ${currentScoreBasePath}`);
+      }
       
       // Scroll back to the top to start sequential scan
       scroller.scrollTop = 0;
 
       // Monitor and scroll down step-by-step
       checkIntervalId = setInterval(() => {
+        // Try to detect base path if not already found (in case first images loaded slowly)
+        if (!currentScoreBasePath) {
+          currentScoreBasePath = detectCurrentScoreBasePath();
+          if (currentScoreBasePath) {
+            console.log(`Detected score base path (deferred): ${currentScoreBasePath}`);
+          }
+        }
+
         // Scan currently rendered images inside scroller
         const images = scroller.querySelectorAll("img");
         images.forEach(img => {
           if (img.src && img.src.startsWith("http")) {
+            // Guard filter: ensure this image belongs to the current score,
+            // preventing residual images from previous pages (SPAs) from being fetched.
+            if (currentScoreBasePath && !img.src.includes(currentScoreBasePath)) {
+              return; // Skip images belonging to a different score
+            }
+
             // Extrapolate page index from image URL file name (e.g. score_0.svg or 0.png)
             const match = img.src.match(/score_(\d+)\.(svg|png|jpg|jpeg)/i) || 
                           img.src.match(/score-(\d+)/i) || 
@@ -188,13 +222,6 @@
               }
             }
           }
-        });
-
-        // Scan inline SVGs (fallback)
-        const svgs = scroller.querySelectorAll("svg");
-        svgs.forEach((svg) => {
-          // If MuseScore ever renders inline SVGs, they would be handled here.
-          // Currently, they use standard img tags.
         });
 
         // Update progress UI

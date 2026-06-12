@@ -3,6 +3,9 @@
 (function () {
   console.log("MuseScore Clean PDF Exporter initialized.");
 
+  // Check if we already injected the button to avoid duplicates
+  if (document.querySelector(".musescore-pdf-fab")) return;
+
   // Search for the MuseScore scroller component
   function findScroller() {
     // 1. Direct standard selectors
@@ -201,15 +204,15 @@
       // Save current scroll position to restore later
       originalScrollTop = scroller.scrollTop;
 
-      // Identify the page class name using the very first child (Page 1) of the scroller.
-      // This allows us to ignore comments, ads, and related score wrappers (which have different classes).
-      const firstChild = scroller.firstElementChild;
-      const pageClass = firstChild ? firstChild.className : "";
+      // Identify the page base class name dynamically using the first DIV child.
+      // This allows us to filter out recommendations and ads by checking class lists.
+      const firstPage = [...scroller.children].find(el => el.tagName === "DIV" && el.classList.length > 0);
+      const pageClass = firstPage ? firstPage.classList[0] : "";
 
       const pageElements = [...scroller.children].filter(el => {
         return el.tagName === "DIV" && 
                el.id !== "musescore-temp-spacer" && 
-               (!pageClass || el.className === pageClass);
+               (!pageClass || el.classList.contains(pageClass));
       });
       const totalPages = pageElements.length;
 
@@ -231,7 +234,7 @@
         const currentPages = [...scroller.children].filter(el => {
           return el.tagName === "DIV" && 
                  el.id !== "musescore-temp-spacer" && 
-                 (!pageClass || el.className === pageClass);
+                 (!pageClass || el.classList.contains(pageClass));
         });
 
         for (const page of currentPages) {
@@ -268,7 +271,7 @@
         const currentPages = [...scroller.children].filter(el => {
           return el.tagName === "DIV" && 
                  el.id !== "musescore-temp-spacer" && 
-                 (!pageClass || el.className === pageClass);
+                 (!pageClass || el.classList.contains(pageClass));
         });
 
         // Scan images ONLY inside these page containers

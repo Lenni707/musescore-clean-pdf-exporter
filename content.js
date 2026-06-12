@@ -170,10 +170,12 @@
 
       // Function to dynamically detect the current score's image base path.
       // Every score has a unique hash/path in its assets (e.g. /scoredata/g/HASH/score_0.svg).
+      // We ONLY check images inside the actual page wrappers to avoid recommended items or avatar icons.
       function detectCurrentScoreBasePath() {
-        const imgs = scroller.querySelectorAll("img");
-        for (const img of imgs) {
-          if (img.src && img.src.startsWith("http")) {
+        const currentPages = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+        for (const page of currentPages) {
+          const img = page.querySelector("img");
+          if (img && img.src && img.src.startsWith("http")) {
             const match = img.src.match(/(.*\/)score_\d+/i) || img.src.match(/(.*\/)\d+\.(svg|png)/i);
             if (match) {
               return match[1]; // Returns everything up to "score_X"
@@ -201,14 +203,16 @@
           }
         }
 
-        // Scan currently rendered images inside scroller
-        const images = scroller.querySelectorAll("img");
-        images.forEach(img => {
-          if (img.src && img.src.startsWith("http")) {
-            // Guard filter: ensure this image belongs to the current score,
-            // preventing residual images from previous pages (SPAs) from being fetched.
+        // Get currently rendered page containers (exclude spacers/ads)
+        const currentPages = [...scroller.children].filter(el => el.tagName === "DIV" && el.id !== "musescore-temp-spacer");
+
+        // Scan images ONLY inside these page containers
+        currentPages.forEach(page => {
+          const img = page.querySelector("img");
+          if (img && img.src && img.src.startsWith("http")) {
+            // Guard filter: ensure this image belongs to the current score
             if (currentScoreBasePath && !img.src.includes(currentScoreBasePath)) {
-              return; // Skip images belonging to a different score
+              return; // Skip images belonging to a different score (remnants of SPAs)
             }
 
             // Extrapolate page index from image URL file name (e.g. score_0.svg or 0.png)

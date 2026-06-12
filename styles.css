@@ -186,6 +186,11 @@
     display: none !important;
   }
   
+  .musescore-pdf-fab,
+  .musescore-pdf-overlay {
+    display: none !important;
+  }
+  
   #musescore-print-container {
     display: block !important;
     position: absolute !important;
@@ -197,7 +202,9 @@
     background: #ffffff !important;
   }
   
-  #musescore-print-container img {
+  #musescore-print-container img,
+  #musescore-print-container svg,
+  #musescore-print-container svg * {
     display: block !important;
     width: 100% !important;
     max-width: 100% !important;
@@ -211,6 +218,8 @@
     break-inside: avoid !important;
     margin: 0 !important;
     padding: 0 !important;
+    filter: none !important;
+    backdrop-filter: none !important;
   }
 
   @page {

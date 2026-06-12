@@ -138,102 +138,68 @@
       cleanupAndRestore();
     });
 
-    // Capture tab via background script and crop the page element
-    function captureAndCropPage(pageElement) {
-      return new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: "captureTab" }, (response) => {
-          if (!response || response.status === "error") {
-            reject(new Error(response ? response.message : "Capture failed"));
+    // Direct DOM cloning export and printing
+    function startDOMExportPass(cachedPages) {
+      if (shouldAbort) return;
+
+      statusText.innerText = "Assembling PDF document...";
+      percentText.innerText = "100%";
+      progressFill.style.width = "100%";
+
+      setTimeout(() => {
+        try {
+          const scroller = findScroller();
+          if (!scroller) {
+            alert("Scroller not found. Please refresh page.");
+            cleanupAndRestore();
             return;
           }
 
-          const img = new Image();
-          img.onload = () => {
-            try {
-              const rect = pageElement.getBoundingClientRect();
-              const scale = window.devicePixelRatio || 1;
-
-              const canvas = document.createElement("canvas");
-              canvas.width = rect.width * scale;
-              canvas.height = rect.height * scale;
-              const ctx = canvas.getContext("2d");
-
-              // Draw screenshot cropped to page elements bounding box
-              ctx.drawImage(
-                img,
-                rect.left * scale,
-                rect.top * scale,
-                rect.width * scale,
-                rect.height * scale,
-                0,
-                0,
-                rect.width * scale,
-                rect.height * scale
-              );
-
-              resolve(canvas.toDataURL("image/png"));
-            } catch (err) {
-              reject(err);
-            }
-          };
-          img.onerror = () => reject(new Error("Failed to load screenshot"));
-          img.src = response.dataUrl;
-        });
-      });
-    }
-
-    // Wait for the page image to load/render inside the DOM page wrapper
-    function waitForPageImage(pageElement) {
-      return new Promise((resolve) => {
-        let attempts = 0;
-        const interval = setInterval(() => {
-          const img = pageElement.querySelector("img");
-          const svg = pageElement.querySelector("svg");
-          attempts++;
-          if ((img && img.src && img.complete) || svg || attempts > 20) {
-            clearInterval(interval);
-            setTimeout(resolve, 100); // Settlement timeout
+          let printContainer = document.getElementById("musescore-print-container");
+          if (printContainer) {
+            printContainer.innerHTML = "";
+          } else {
+            printContainer = document.createElement("div");
+            printContainer.id = "musescore-print-container";
+            document.body.appendChild(printContainer);
           }
-        }, 100);
-      });
-    }
 
-    // Compile cropped screenshot dataURLs into print container and trigger print
-    function compileAndPrint(pageUrls, totalPages) {
-      let printContainer = document.getElementById("musescore-print-container");
-      if (printContainer) {
-        printContainer.innerHTML = "";
-      } else {
-        printContainer = document.createElement("div");
-        printContainer.id = "musescore-print-container";
-        document.body.appendChild(printContainer);
-      }
+          // Sort the cached pages by their vertical position (top to bottom)
+          const sortedElements = [...cachedPages.values()]
+            .sort((a, b) => a.yPos - b.yPos)
+            .map(p => p.element);
 
-      let pagesAppended = 0;
-      for (let i = 0; i < totalPages; i++) {
-        const src = pageUrls.get(i);
-        if (src) {
-          const img = document.createElement("img");
-          img.src = src;
-          printContainer.appendChild(img);
-          pagesAppended++;
+          let pagesAppended = 0;
+          for (let i = 0; i < sortedElements.length; i++) {
+            const el = sortedElements[i];
+            printContainer.appendChild(el);
+            pagesAppended++;
+          }
+
+          cleanupAndRestore();
+          scroller.scrollTop = originalScrollTop; // Restore view
+
+          if (pagesAppended === 0) {
+            alert("Failed to extract sheet pages. Please ensure the score is loaded and try again.");
+            if (printContainer.parentNode) printContainer.parentNode.removeChild(printContainer);
+            return;
+          }
+
+          console.log(`Printing PDF with ${pagesAppended} pages...`);
+          window.print();
+
+          window.addEventListener("afterprint", () => {
+            if (printContainer && printContainer.parentNode) {
+              printContainer.parentNode.removeChild(printContainer);
+            }
+          }, { once: true });
+
+        } catch (err) {
+          console.error("DOM export error:", err);
+          alert(`Export failed: ${err.message}`);
+          cleanupAndRestore();
         }
-      }
-
-      if (pagesAppended === 0) {
-        alert("Failed to capture any pages. Please check permissions and try again.");
-        if (printContainer.parentNode) printContainer.parentNode.removeChild(printContainer);
-        return;
-      }
-
-      console.log(`Printing PDF with ${pagesAppended} pages...`);
-      window.print();
-
-      window.addEventListener("afterprint", () => {
-        if (printContainer && printContainer.parentNode) {
-          printContainer.parentNode.removeChild(printContainer);
-        }
-      }, { once: true });
+      }, 500);
     }
 
     fab.addEventListener("click", async () => {
@@ -275,8 +241,9 @@
       }
 
       // -------------------------------------------------------------
-      // Pass 1: Natural Scroll to load all images into memory/DOM
+      // Pass 1: Natural Scroll to load all images into memory/DOM and cache them
       // -------------------------------------------------------------
+      const cachedPages = new Map();
       let lastScrollTop = -1;
       let noScrollChangeCount = 0;
       scroller.scrollTop = 0;
@@ -284,22 +251,45 @@
       checkIntervalId = setInterval(async () => {
         if (shouldAbort) return;
 
-        // Count loaded pages currently in DOM
+        // Find page containers currently in DOM
         const currentPages = [...scroller.children].filter(el => {
           return el.tagName === "DIV" && 
                  el.id !== "musescore-temp-spacer" && 
                  (!pageClass || el.classList.contains(pageClass));
         });
 
-        let loadedCount = 0;
         currentPages.forEach(page => {
-          const img = page.querySelector("img");
           const svg = page.querySelector("svg");
-          if ((img && img.src && img.complete) || svg) {
-            loadedCount++;
+          const img = page.querySelector("img");
+
+          const yPos = page.offsetTop || (page.getBoundingClientRect().top + scroller.scrollTop);
+
+          // Check if already cached (with 50px tolerance)
+          const alreadyCached = [...cachedPages.values()].some(p => Math.abs(p.yPos - yPos) < 50);
+          if (alreadyCached) return;
+
+          if (svg) {
+            const clonedSvg = svg.cloneNode(true);
+            clonedSvg.removeAttribute("class");
+            clonedSvg.style.width = "100%";
+            clonedSvg.style.height = "auto";
+            clonedSvg.style.display = "block";
+            cachedPages.set(yPos, { yPos: yPos, element: clonedSvg });
+          } else if (img && img.src && img.complete) {
+            const src = img.src;
+            // Filter out tracking/empty/placeholder images
+            if (src.startsWith("http") && (src.includes("score_") || src.includes("score-") || src.includes("scoredata"))) {
+              const clonedImg = document.createElement("img");
+              clonedImg.src = src;
+              clonedImg.style.width = "100%";
+              clonedImg.style.height = "auto";
+              clonedImg.style.display = "block";
+              cachedPages.set(yPos, { yPos: yPos, element: clonedImg });
+            }
           }
         });
 
+        const loadedCount = cachedPages.size;
         const percentage = Math.round((loadedCount / totalPages) * 100);
         percentText.innerText = `${percentage}%`;
         progressFill.style.width = `${percentage}%`;
@@ -308,7 +298,7 @@
         if (loadedCount === totalPages) {
           clearInterval(checkIntervalId);
           checkIntervalId = null;
-          startCapturePass();
+          startDOMExportPass(cachedPages);
           return;
         }
 
@@ -320,121 +310,14 @@
           if (noScrollChangeCount >= 6) {
             clearInterval(checkIntervalId);
             checkIntervalId = null;
-            // Scroll limit reached; start capture pass on whatever pages loaded
-            startCapturePass();
+            // Scroll limit reached; start export pass on whatever pages loaded
+            startDOMExportPass(cachedPages);
           }
         } else {
           lastScrollTop = scroller.scrollTop;
           noScrollChangeCount = 0;
         }
       }, 300);
-
-      // -------------------------------------------------------------
-      // Pass 2: Print Layout Injection and Visual Capture Sweep
-      // -------------------------------------------------------------
-      async function startCapturePass() {
-        if (shouldAbort) return;
-        
-        statusText.innerText = "Applying clean print layout...";
-        percentText.innerText = "0%";
-        progressFill.style.width = "0%";
-
-        // Inject fullscreen styles to isolate sheet music pages
-        const tempStyle = document.createElement("style");
-        tempStyle.id = "musescore-temp-print-styles";
-        tempStyle.textContent = `
-          ::-webkit-scrollbar {
-            display: none !important;
-          }
-          #jmuse-scroller-component,
-          div[class*="jmuse-scroller"],
-          div[id*="scroller-component"] {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            z-index: 9999999 !important;
-            background: #ffffff !important;
-            overflow: auto !important;
-          }
-          body > :not(#jmuse-scroller-component):not(div[class*="jmuse-scroller"]):not(div[id*="scroller-component"]):not(.musescore-pdf-overlay) {
-            display: none !important;
-          }
-          *, [class*="blur"], [class*="locked"], [class*="paywall"] {
-            filter: none !important;
-            backdrop-filter: none !important;
-          }
-          [class*="paywall"],
-          [class*="upgrade"],
-          [class*="promo"],
-          [class*="banner"],
-          [class*="obfuscation"],
-          div[class*="shield"],
-          .react-shield-overlay {
-            display: none !important;
-            opacity: 0 !important;
-            pointer-events: none !important;
-          }
-        `;
-        document.head.appendChild(tempStyle);
-
-        const pageUrls = new Map();
-        scroller.scrollTop = 0;
-
-        try {
-          // Identify elements under the new fullscreen scroller
-          const capturePages = [...scroller.children].filter(el => {
-            return el.tagName === "DIV" && 
-                   el.id !== "musescore-temp-spacer" && 
-                   (!pageClass || el.classList.contains(pageClass));
-          });
-
-          for (let i = 0; i < totalPages; i++) {
-            if (shouldAbort) return;
-
-            const pageElement = capturePages[i];
-            if (!pageElement) continue;
-
-            statusText.innerText = `Capturing page ${i + 1} of ${totalPages}...`;
-            pageElement.scrollIntoView({ block: "center", inline: "center" });
-
-            // Settle layout positioning
-            await waitForPageImage(pageElement);
-
-            if (shouldAbort) return;
-
-            // Temporarily hide progress overlay during screenshot
-            overlay.style.display = "none";
-            await new Promise(r => setTimeout(r, 80));
-
-            // Capture and Crop
-            const croppedSrc = await captureAndCropPage(pageElement);
-            pageUrls.set(i, croppedSrc);
-
-            // Restore progress overlay
-            overlay.style.display = "flex";
-
-            const percentage = Math.round(((i + 1) / totalPages) * 100);
-            percentText.innerText = `${percentage}%`;
-            progressFill.style.width = `${percentage}%`;
-          }
-
-          if (shouldAbort) return;
-
-          statusText.innerText = "Assembling PDF document...";
-          setTimeout(() => {
-            cleanupAndRestore();
-            scroller.scrollTop = originalScrollTop; // Restore view
-            compileAndPrint(pageUrls, totalPages);
-          }, 500);
-
-        } catch (err) {
-          console.error("Capture loop error:", err);
-          alert(`Export failed during screen capture: ${err.message}`);
-          cleanupAndRestore();
-        }
-      }
     });
   }
 
